@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -1134,13 +1135,6 @@ func (m model) View() string {
 		b.WriteString("\n")
 	}
 
-	// Status bar
-	statusStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#FFFFFF")).
-		Background(lipgloss.Color("#5555FF")).
-		Padding(0, 1).
-		Width(m.terminalWidth)
-
 	elapsed := time.Since(m.lastUpdate)
 
 	// Calculate position in buffer
@@ -1172,18 +1166,78 @@ func (m model) View() string {
 		followIndicator = " [FOLLOW]"
 	}
 
+	// Build status text that fits in one line
+	var statusText string
+
 	// Show marker input prompt if active
 	if m.promptingMarker {
-		statusText := fmt.Sprintf("Enter marker message: %s_", m.markerInput)
-		b.WriteString(statusStyle.Render(statusText))
+		statusText = fmt.Sprintf("Enter marker message: %s_", m.markerInput)
 	} else {
-		statusText := fmt.Sprintf("%s | Last update: %s ago | %s%s",
-			m.filename,
-			formatDuration(elapsed),
-			positionInfo,
-			followIndicator)
-		b.WriteString(statusStyle.Render(statusText))
+		// Build status bar that always fits on one line
+		displayName := filepath.Base(m.filename)
+		timeStr := formatDuration(elapsed)
+
+		// Calculate max available width (account for padding: 2 chars)
+		maxWidth := m.terminalWidth - 2
+		if maxWidth < 10 {
+			maxWidth = 10
+		}
+
+		// Try different formats from most detailed to most compact
+		// Format 1: Full path with "Last update:"
+		fullPath := fmt.Sprintf("%s | Last update: %s | %s%s",
+			m.filename, timeStr, positionInfo, followIndicator)
+
+		// Format 2: Basename with "Last update:"
+		withLastUpdate := fmt.Sprintf("%s | Last update: %s | %s%s",
+			displayName, timeStr, positionInfo, followIndicator)
+
+		// Format 3: Basename without "Last update:"
+		compact := fmt.Sprintf("%s | %s | %s%s",
+			displayName, timeStr, positionInfo, followIndicator)
+
+		// Choose the format that fits
+		if len(fullPath) <= maxWidth {
+			statusText = fullPath
+		} else if len(withLastUpdate) <= maxWidth {
+			statusText = withLastUpdate
+		} else if len(compact) <= maxWidth {
+			statusText = compact
+		} else {
+			// Even compact doesn't fit - truncate filename
+			// Calculate how much space we need for the rest
+			suffix := fmt.Sprintf(" | %s | %s%s", timeStr, positionInfo, followIndicator)
+			maxNameLen := maxWidth - len(suffix) - 3 // -3 for "..."
+
+			if maxNameLen < 1 {
+				// Really narrow - just show position
+				statusText = fmt.Sprintf("%s%s", positionInfo, followIndicator)
+				if len(statusText) > maxWidth {
+					statusText = statusText[:maxWidth]
+				}
+			} else {
+				truncName := displayName
+				if len(truncName) > maxNameLen {
+					truncName = truncName[:maxNameLen] + "..."
+				}
+				statusText = truncName + suffix
+			}
+		}
+
+		// Final safety check - ensure it doesn't exceed width
+		if len(statusText) > maxWidth {
+			statusText = statusText[:maxWidth]
+		}
 	}
+
+	// Apply style and render
+	statusStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#FFFFFF")).
+		Background(lipgloss.Color("#5555FF")).
+		Padding(0, 1).
+		Width(m.terminalWidth)
+
+	b.WriteString(statusStyle.Render(statusText))
 
 	return b.String()
 }
