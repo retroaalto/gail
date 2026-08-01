@@ -1217,6 +1217,7 @@ func main() {
 	var showVersion bool
 
 	flag.BoolVar(&showVersion, "version", false, "Show version information")
+	flag.BoolVar(&showVersion, "V", false, "Show version information")
 	flag.BoolVar(&showTimestamp, "t", false, "Show timestamp for each line")
 	flag.BoolVar(&showTimestamp, "timestamp", false, "Show timestamp for each line")
 	flag.StringVar(&timestampFmt, "timestamp-format", "", "Custom timestamp format (e.g., +%y%m%d-%H%M%S)")
