@@ -114,12 +114,25 @@ Default format: `YYMMDD-hhmmss` (060102-150405)
 - `←` or `h` - Scroll left
 - `→` or `l` - Scroll right
 
+**Markers:**
+- `m` - Prompt for custom marker text
+- `Enter` - Insert marker at current position (follow mode only)
+
 **Other:**
-- `q` or `Ctrl+C` - Quit the application
+- `q` - Quit (when following), resume follow mode (when scrolled up)
+- `Esc` - Resume follow mode
+- `Ctrl+C` - Quit
+
+### Marker Prompt
+
+When inserting a marker:
+- Type text, then press `Enter` to confirm
+- `Esc` or `Ctrl+C` to cancel
+- `Backspace` to delete last character
 
 ### Follow Mode
 
-The application starts in "follow mode" where it automatically scrolls to show new lines as they are added. When you scroll up manually, follow mode is disabled and indicated by the absence of `[FOLLOW]` in the status bar. To re-enable follow mode, scroll to the bottom using `G` or `End`, or press `↓`/`j` until you reach the end.
+The application starts in "follow mode" where it automatically scrolls to show new lines as they are added. When you scroll up manually, follow mode is disabled and indicated by the absence of `[FOLLOW]` in the status bar. To re-enable follow mode, press `Esc`, scroll to the bottom using `G` or `End`, or press `↓`/`j` until you reach the end.
 
 ## Event Markers
 
