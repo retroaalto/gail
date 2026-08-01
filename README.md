@@ -17,6 +17,16 @@ A graphical TUI tool similar to `tail -f` written in Go using [Bubbletea](https:
 
 ## Installation
 
+### Homebrew
+
+```bash
+brew tap retroaalto/gail https://github.com/retroaalto/gail
+brew trust retroaalto/gail
+brew install gail
+```
+
+### From Source
+
 Build with version information using the build script:
 
 ```bash
@@ -32,7 +42,7 @@ Or install directly to your GOBIN:
 Alternative: Use make if you prefer:
 
 ```bash
-make build          # or make install
+make build          # make install
 ```
 
 Manual build (without version info):
