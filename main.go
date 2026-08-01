@@ -107,50 +107,67 @@ func checkFileCmd(filename string) tea.Cmd {
 
 func waitForFileChanges(filename string, watcher *fsnotify.Watcher, reader *fileReader) tea.Cmd {
 	return func() tea.Msg {
-		select {
-		case event := <-watcher.Events:
-			if event.Op&fsnotify.Write == fsnotify.Write {
-				result, err := readNewLines(filename, reader)
-				if err != nil {
-					if errors.Is(err, errNoCompleteLines) {
-						return nil
+		for {
+			select {
+			case event := <-watcher.Events:
+				if event.Op&fsnotify.Write == fsnotify.Write {
+					result, err := readNewLines(filename, reader)
+					if err != nil {
+						if errors.Is(err, errNoCompleteLines) {
+							continue
+						}
+						return errMsg{err}
 					}
-					return errMsg{err}
+					return fileUpdateMsg{
+						lines:       result.lines,
+						partialLine: result.partialLine,
+						event:       result.event,
+						eventTime:   time.Now(),
+					}
 				}
-				return fileUpdateMsg{
-					lines:       result.lines,
-					partialLine: result.partialLine,
-					event:       result.event,
-					eventTime:   time.Now(),
+
+				if event.Op&fsnotify.Remove == fsnotify.Remove {
+					watcher.Remove(filename)
+					for attempt := 0; attempt < 5; attempt++ {
+						time.Sleep(100 * time.Millisecond)
+						if err := watcher.Add(filename); err == nil {
+							break
+						}
+					}
+					if _, err := os.Stat(filename); os.IsNotExist(err) {
+						time.Sleep(500 * time.Millisecond)
+						if err := watcher.Add(filename); err != nil {
+							return errMsg{fmt.Errorf("file removed and could not re-watch: %w", err)}
+						}
+					}
+					return fileRecreatedMsg{eventType: eventRemove}
 				}
-			}
 
-			if event.Op&fsnotify.Remove == fsnotify.Remove {
-				watcher.Remove(filename)
-				time.Sleep(100 * time.Millisecond)
-				if err := watcher.Add(filename); err != nil {
-					return errMsg{fmt.Errorf("file removed and could not re-watch: %w", err)}
+				if event.Op&fsnotify.Rename == fsnotify.Rename {
+					watcher.Remove(filename)
+					for attempt := 0; attempt < 5; attempt++ {
+						time.Sleep(100 * time.Millisecond)
+						if err := watcher.Add(filename); err == nil {
+							break
+						}
+					}
+					if _, err := os.Stat(filename); os.IsNotExist(err) {
+						time.Sleep(500 * time.Millisecond)
+						if err := watcher.Add(filename); err != nil {
+							return errMsg{fmt.Errorf("file renamed and could not re-watch: %w", err)}
+						}
+					}
+					return fileRecreatedMsg{eventType: eventRename}
 				}
-				return fileRecreatedMsg{eventType: eventRemove}
-			}
 
-			if event.Op&fsnotify.Rename == fsnotify.Rename {
-				watcher.Remove(filename)
-				time.Sleep(100 * time.Millisecond)
-				if err := watcher.Add(filename); err != nil {
-					return errMsg{fmt.Errorf("file renamed and could not re-watch: %w", err)}
+				if event.Op&fsnotify.Create == fsnotify.Create {
+					return fileRecreatedMsg{eventType: eventRecreate}
 				}
-				return fileRecreatedMsg{eventType: eventRename}
-			}
 
-			if event.Op&fsnotify.Create == fsnotify.Create {
-				return fileRecreatedMsg{eventType: eventRecreate}
+			case err := <-watcher.Errors:
+				return errMsg{err}
 			}
-
-		case err := <-watcher.Errors:
-			return errMsg{err}
 		}
-		return nil
 	}
 }
 
@@ -161,86 +178,54 @@ func tickCmd() tea.Cmd {
 }
 
 func readLastLines(filename string, reader *fileReader, n int) ([]string, error) {
-	content, err := os.ReadFile(filename)
-	if err != nil {
-		return nil, err
-	}
-
-	text := string(content)
-	if len(text) == 0 {
-		reader.mu.Lock()
-		reader.readPos = 0
-		reader.partialLine = ""
-		reader.mu.Unlock()
-		return nil, nil
-	}
-
-	endsWithNewline := strings.HasSuffix(text, "\n")
-	allLines := strings.Split(text, "\n")
-
-	var completeLines []string
-	reader.mu.Lock()
-	if endsWithNewline {
-		if len(allLines) > 0 && allLines[len(allLines)-1] == "" {
-			completeLines = allLines[:len(allLines)-1]
-		} else {
-			completeLines = allLines
-		}
-		reader.readPos = int64(len(content))
-		reader.partialLine = ""
-	} else {
-		if len(allLines) > 1 {
-			completeLines = allLines[:len(allLines)-1]
-			reader.partialLine = allLines[len(allLines)-1]
-			reader.readPos = int64(len(content))
-		} else {
-			completeLines = []string{}
-			reader.partialLine = allLines[0]
-			reader.readPos = int64(len(content))
-		}
-	}
-	reader.mu.Unlock()
-
-	if len(completeLines) == 0 {
-		return nil, nil
-	}
-
-	start := 0
-	if len(completeLines) > n {
-		start = len(completeLines) - n
-	}
-
-	return completeLines[start:], nil
-}
-
-func readLastLinesOld(filename string, n int) ([]string, error) {
 	file, err := os.Open(filename)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
 
-	reader := bufio.NewReader(file)
+	fileSize, err := file.Seek(0, io.SeekEnd)
+	if err != nil {
+		return nil, err
+	}
+	_, err = file.Seek(0, io.SeekStart)
+	if err != nil {
+		return nil, err
+	}
+
+	br := bufio.NewReader(file)
 	ring := make([]string, n)
 	count := 0
+	var lastPartial string
 
 	for {
-		line, err := reader.ReadString('\n')
-		if len(line) > 0 {
-			trimmed := strings.TrimRight(line, "\r\n")
+		line, err := br.ReadString('\n')
+		trimmed := strings.TrimRight(line, "\r\n")
+
+		if strings.HasSuffix(line, "\n") {
 			ring[count%n] = trimmed
 			count++
+		} else if len(line) > 0 {
+			lastPartial = line
 		}
 
 		if err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				break
 			}
 			return nil, err
 		}
 	}
 
-	available := min(count, n)
+	reader.mu.Lock()
+	reader.readPos = fileSize
+	reader.partialLine = lastPartial
+	reader.mu.Unlock()
+
+	available := count
+	if available > n {
+		available = n
+	}
 	if available == 0 {
 		return nil, nil
 	}
@@ -253,6 +238,7 @@ func readLastLinesOld(filename string, n int) ([]string, error) {
 
 	return lines, nil
 }
+
 
 type fileReadResult struct {
 	lines       []string
@@ -278,6 +264,8 @@ func readNewLines(filename string, reader *fileReader) (*fileReadResult, error) 
 	detectedEvent := eventNone
 
 	reader.mu.Lock()
+	defer reader.mu.Unlock()
+
 	if fileSize < reader.readPos {
 		reader.readPos = 0
 		reader.partialLine = ""
@@ -286,13 +274,15 @@ func readNewLines(filename string, reader *fileReader) (*fileReadResult, error) 
 	}
 
 	if fileSize <= reader.readPos && detectedEvent == eventNone {
-		reader.mu.Unlock()
-		return &fileReadResult{lines: nil, event: eventNone}, nil
+		return &fileReadResult{
+			lines:       nil,
+			partialLine: reader.partialLine,
+			event:       eventNone,
+		}, nil
 	}
 
 	seekPos := reader.readPos
 	currentPartialContent := reader.partialLine
-	reader.mu.Unlock()
 
 	_, err = file.Seek(seekPos, io.SeekStart)
 	if err != nil {
@@ -325,35 +315,28 @@ func readNewLines(filename string, reader *fileReader) (*fileReadResult, error) 
 			if debugLog != nil {
 				debugLog.Printf("readNewLines: complete line found: %q", segment)
 			}
-			reader.mu.Lock()
 			reader.partialLine = ""
 			reader.partialBytes = 0
 			reader.readPos += bytesReadFromFile
-			reader.mu.Unlock()
 			bytesReadFromFile = 0
 		} else {
-			reader.mu.Lock()
 			reader.partialLine = segment
 			reader.partialBytes = bytesReadFromFile
 			reader.readPos += bytesReadFromFile
 			if debugLog != nil {
 				debugLog.Printf("readNewLines: partial line saved: %q (pos=%d)", reader.partialLine, reader.readPos)
 			}
-			reader.mu.Unlock()
 		}
 
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				reader.mu.Lock()
-				partial := reader.partialLine
-				reader.mu.Unlock()
-				if partial != "" {
+				if reader.partialLine != "" {
 					if debugLog != nil {
-						debugLog.Printf("readNewLines: returning partial line: %q", partial)
+						debugLog.Printf("readNewLines: returning partial line: %q", reader.partialLine)
 					}
 					return &fileReadResult{
 						lines:       lines,
-						partialLine: partial,
+						partialLine: reader.partialLine,
 						event:       detectedEvent,
 					}, nil
 				}
@@ -366,11 +349,9 @@ func readNewLines(filename string, reader *fileReader) (*fileReadResult, error) 
 		}
 	}
 
-	reader.mu.Lock()
 	reader.readPos = fileSize
 	reader.partialLine = ""
 	reader.partialBytes = 0
-	reader.mu.Unlock()
 	return &fileReadResult{lines: lines, event: detectedEvent}, nil
 }
 
@@ -405,16 +386,11 @@ func readAllLines(filename string, reader *fileReader) ([]string, error) {
 	} else {
 		if len(allLines) > 1 {
 			lines = allLines[:len(allLines)-1]
-			completeContent := strings.Join(lines, "\n")
-			if len(lines) > 0 {
-				reader.readPos = int64(len(completeContent) + 1)
-			} else {
-				reader.readPos = 0
-			}
+			reader.readPos = int64(len(content))
 			reader.partialLine = allLines[len(allLines)-1]
 		} else {
 			lines = []string{}
-			reader.readPos = 0
+			reader.readPos = int64(len(content))
 			reader.partialLine = allLines[0]
 		}
 	}
@@ -499,7 +475,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					event:     eventMarker,
 					isMarker:  true,
 				}
-				m.allLines = append(m.allLines, markerLine)
+				m.appendLine(markerLine)
 
 				if m.autoFollow {
 					availableHeight := m.terminalHeight - 1
@@ -524,12 +500,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			case "backspace":
 				if len(m.markerInput) > 0 {
-					m.markerInput = m.markerInput[:len(m.markerInput)-1]
+					runes := []rune(m.markerInput)
+					m.markerInput = string(runes[:len(runes)-1])
 				}
 				return m, nil
 
 			default:
-				if len(msg.String()) == 1 {
+				if utf8.RuneCountInString(msg.String()) == 1 {
 					m.markerInput += msg.String()
 				}
 				return m, nil
@@ -586,7 +563,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					event:     eventMarker,
 					isMarker:  true,
 				}
-				m.allLines = append(m.allLines, markerLine)
+				m.appendLine(markerLine)
 
 				availableHeight := m.terminalHeight - 1
 				if availableHeight < 1 {
@@ -949,7 +926,7 @@ func (m model) View() string {
 	signWidth := 2
 	var timestampWidth int
 	if m.showTimestamp {
-		timestampWidth = len(time.Now().Format(m.timestampFmt)) + 1
+		timestampWidth = len(m.lastUpdate.Format(m.timestampFmt)) + 1
 	}
 	availableWidth := m.terminalWidth - signWidth - timestampWidth
 	if availableWidth < 10 {
@@ -1190,13 +1167,6 @@ func truncateToWidth(s string, maxWidth int) string {
 		width += rl
 	}
 	return s
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 func formatDuration(d time.Duration) string {

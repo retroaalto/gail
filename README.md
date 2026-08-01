@@ -21,7 +21,6 @@ A graphical TUI tool similar to `tail -f` written in Go using [Bubbletea](https:
 
 ```bash
 brew tap retroaalto/gail https://github.com/retroaalto/gail
-brew trust retroaalto/gail
 brew install gail
 ```
 
