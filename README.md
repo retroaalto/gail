@@ -20,7 +20,7 @@ A graphical TUI tool similar to `tail -f` written in Go using [Bubbletea](https:
 ### Homebrew
 
 ```bash
-brew tap retroaalto/gail https://github.com/retroaalto/gail
+brew tap retroaalto/gail
 brew install gail
 ```
 
